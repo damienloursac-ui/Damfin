@@ -22,23 +22,16 @@
 <div id="root"></div>
 <script type="text/babel">
 
-// ── Config ────────────────────────────────────────────────────────────────────
-const SHEET_ID = "1txYkGtXlLqnfLUrN6JJbTuhlszC_Vl692GpVV3ePt5I";
-const API_KEY  = "AIzaSyBMsCYdwNmFuFwN1OF2FTcbtarE9ZTLRRU";
-const BASE     = `https://sheets.googleapis.com/v4/spreadsheets/${SHEET_ID}`;
-const SHEETS   = { assets: "Assets", debts: "Debts", snapshots: "Snapshots" };
+// ── Config Apps Script ────────────────────────────────────────────────────────
+const SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxeBNiU6zAtvctGs35nfFlGZyPEC1LMHKcWJeSC4Zyk3_6ln8thBVMSIQfdis81Jq7T/exec";
 
-const ASSET_HEADERS = ["id","name","type","value","costBasis","notes","createdAt"];
-const DEBT_HEADERS  = ["id","name","type","value","notes"];
-const SNAP_HEADERS  = ["date","brut","net"];
-
-async function gGet(sheet, headers) {
-  const col = String.fromCharCode(64 + headers.length);
-  const r = await fetch(`${BASE}/values/${sheet}!A:${col}?key=${API_KEY}`);
-  if (!r.ok) throw new Error(r.status);
-  const d = await r.json();
-  const rows = d.values || [];
-  if (rows.length < 2) return [];
+async function gGet(sheet) {
+  const url = `${SCRIPT_URL}?sheet=${encodeURIComponent(sheet)}`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`GET ${sheet} → ${r.status}`);
+  const rows = await r.json(); // tableau de tableaux
+  if (!rows || rows.length < 2) return [];
+  const headers = rows[0];
   return rows.slice(1).map(row => {
     const obj = {};
     headers.forEach((h, i) => { obj[h] = row[i] ?? ""; });
@@ -47,18 +40,21 @@ async function gGet(sheet, headers) {
 }
 
 async function gSave(sheet, headers, items) {
-  // Clear
-  await fetch(`${BASE}/values/${sheet}!A:Z:clear?key=${API_KEY}`, { method: "POST", headers: {"Content-Type":"application/json"} });
-  // Write
-  const values = [headers, ...items.map(it => headers.map(h => it[h] ?? ""))];
-  await fetch(`${BASE}/values/${encodeURIComponent(sheet+"!A1")}?valueInputOption=RAW&key=${API_KEY}`, {
-    method: "PUT",
-    headers: {"Content-Type":"application/json"},
-    body: JSON.stringify({ range: sheet+"!A1", majorDimension:"ROWS", values })
+  const values = [headers, ...items.map(it => headers.map(h => String(it[h] ?? "")))];
+  const r = await fetch(SCRIPT_URL, {
+    method: "POST",
+    headers: { "Content-Type": "text/plain" }, // Apps Script n'accepte pas application/json en CORS simple
+    body: JSON.stringify({ sheet, values }),
   });
+  if (!r.ok) throw new Error(`POST ${sheet} → ${r.status}`);
+  return r.json();
 }
 
-// ── Palette ───────────────────────────────────────────────────────────────────
+// ── Constantes ────────────────────────────────────────────────────────────────
+const ASSET_HEADERS = ["id","name","type","value","costBasis","notes","createdAt"];
+const DEBT_HEADERS  = ["id","name","type","value","notes"];
+const SNAP_HEADERS  = ["date","brut","net"];
+
 const C = {
   bg:"#0d0f14", surface:"#14171f", card:"#1a1e28", border:"#252a38",
   accent:"#e8c547", text:"#f0ece0", muted:"#7a8099",
@@ -89,7 +85,7 @@ const pct = (a,b) => Number(b)===0 ? "0.0" : ((Number(a)/Number(b))*100).toFixed
 const typeOf     = id => ASSET_TYPES.find(t=>t.id===id) || ASSET_TYPES[8];
 const debtTypeOf = id => DEBT_TYPES.find(t=>t.id===id)  || DEBT_TYPES[2];
 
-// ── Donut SVG ─────────────────────────────────────────────────────────────────
+// ── Composants visuels ────────────────────────────────────────────────────────
 function Donut({ data, size=120, centerLabel }) {
   const r=42, cx=60, cy=60, circ=2*Math.PI*r;
   const total = data.reduce((s,d)=>s+d.value,0);
@@ -109,14 +105,13 @@ function Donut({ data, size=120, centerLabel }) {
       ))}
       <circle cx={cx} cy={cy} r={33} fill={C.card}/>
       {centerLabel && <>
-        <text x="60" y="57" textAnchor="middle" fill={C.muted} fontSize="8" fontFamily="DM Sans,sans-serif">{centerLabel.line1}</text>
-        <text x="60" y="68" textAnchor="middle" fill={C.text} fontSize="9" fontWeight="700" fontFamily="DM Sans,sans-serif">{centerLabel.line2}</text>
+        <text x="60" y="57" textAnchor="middle" fill={C.muted} fontSize="8" fontFamily="sans-serif">{centerLabel.line1}</text>
+        <text x="60" y="68" textAnchor="middle" fill={C.text} fontSize="9" fontWeight="700" fontFamily="sans-serif">{centerLabel.line2}</text>
       </>}
     </svg>
   );
 }
 
-// ── Sparkline ─────────────────────────────────────────────────────────────────
 function Sparkline({ values, color=C.accent, width=80, height=32 }) {
   if (!values||values.length<2) return null;
   const min=Math.min(...values), max=Math.max(...values), range=max-min||1;
@@ -124,7 +119,6 @@ function Sparkline({ values, color=C.accent, width=80, height=32 }) {
   return <svg width={width} height={height} style={{overflow:"visible"}}><polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round"/></svg>;
 }
 
-// ── KPI Card ──────────────────────────────────────────────────────────────────
 function KpiCard({ label, sublabel, value, color, delta, sparkValues, onClick, active }) {
   return (
     <div onClick={onClick} style={{
@@ -141,13 +135,12 @@ function KpiCard({ label, sublabel, value, color, delta, sparkValues, onClick, a
   );
 }
 
-// ── Sync Badge ────────────────────────────────────────────────────────────────
 function SyncBadge({ status }) {
   const map = {
     loading:{ label:"Chargement…",   color:C.accent },
     saving: { label:"Sauvegarde…",   color:C.accent },
     ok:     { label:"✓ Synchronisé", color:C.green  },
-    error:  { label:"⚠ Erreur Sheets — vérifiez le partage du Sheet", color:C.red },
+    error:  { label:"⚠ Erreur de connexion", color:C.red },
   };
   const s = map[status]||{label:"",color:C.muted};
   return (
@@ -159,12 +152,12 @@ function SyncBadge({ status }) {
   );
 }
 
-// ── Input / Select helpers ────────────────────────────────────────────────────
-const inputStyle = { width:"100%",background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",color:C.text,fontSize:14,outline:"none",boxSizing:"border-box" };
-const labelStyle = { display:"block",fontSize:12,fontWeight:600,color:C.muted,marginBottom:5 };
-const addBtnStyle = { background:C.accent,color:C.bg,border:"none",borderRadius:10,padding:"10px 18px",cursor:"pointer",fontWeight:700,fontSize:13 };
-const ghostBtnStyle = { background:"transparent",border:`1px solid ${C.border}`,color:C.text,borderRadius:10,padding:"10px 18px",cursor:"pointer",fontWeight:600,fontSize:13 };
-const rowStyle = { display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,marginBottom:8 };
+// Styles partagés
+const iS = { width:"100%",background:C.surface,border:`1px solid ${C.border}`,borderRadius:8,padding:"10px 14px",color:C.text,fontSize:14,outline:"none",boxSizing:"border-box" };
+const lS = { display:"block",fontSize:12,fontWeight:600,color:C.muted,marginBottom:5 };
+const aB = { background:C.accent,color:C.bg,border:"none",borderRadius:10,padding:"10px 18px",cursor:"pointer",fontWeight:700,fontSize:13 };
+const gB = { background:"transparent",border:`1px solid ${C.border}`,color:C.text,borderRadius:10,padding:"10px 18px",cursor:"pointer",fontWeight:600,fontSize:13 };
+const rS = { display:"flex",alignItems:"center",gap:12,padding:"12px 14px",background:C.surface,border:`1px solid ${C.border}`,borderRadius:10,marginBottom:8 };
 
 // ── App ───────────────────────────────────────────────────────────────────────
 function App() {
@@ -177,8 +170,8 @@ function App() {
   const [view,      setView]      = useState("dashboard");
   const [highlight, setHighlight] = useState(null);
 
-  const [showAF, setShowAF] = useState(false);
-  const [showDF, setShowDF] = useState(false);
+  const [showAF,  setShowAF]  = useState(false);
+  const [showDF,  setShowDF]  = useState(false);
   const [editAId, setEditAId] = useState(null);
   const [editDId, setEditDId] = useState(null);
   const [aForm, setAForm] = useState({name:"",type:"pea",value:"",costBasis:"",notes:""});
@@ -190,43 +183,50 @@ function App() {
 
   const timer = useRef(null);
 
-  // Load
+  // ── Chargement initial ────────────────────────────────────────────────────
   useEffect(()=>{
     (async()=>{
       setSync("loading");
       try {
         const [a,d,s] = await Promise.all([
-          gGet(SHEETS.assets, ASSET_HEADERS),
-          gGet(SHEETS.debts,  DEBT_HEADERS),
-          gGet(SHEETS.snapshots, SNAP_HEADERS),
+          gGet("Assets"),
+          gGet("Debts"),
+          gGet("Snapshots"),
         ]);
         setAssets(a.map(x=>({...x,value:Number(x.value)||0,costBasis:Number(x.costBasis)||0})));
         setDebts(d.map(x=>({...x,value:Number(x.value)||0})));
         setSnapshots(s.map(x=>({...x,brut:Number(x.brut)||0,net:Number(x.net)||0})));
         setSync("ok");
-      } catch { setSync("error"); }
+      } catch(e) {
+        console.error(e);
+        setSync("error");
+      }
     })();
   },[]);
 
+  // ── Sauvegarde debouncée ──────────────────────────────────────────────────
   const persist = useCallback((a,d,s)=>{
     if(timer.current) clearTimeout(timer.current);
     setSync("saving");
     timer.current = setTimeout(async()=>{
       try {
         await Promise.all([
-          gSave(SHEETS.assets,    ASSET_HEADERS, a),
-          gSave(SHEETS.debts,     DEBT_HEADERS,  d),
-          gSave(SHEETS.snapshots, SNAP_HEADERS,  s),
+          gSave("Assets",    ASSET_HEADERS, a),
+          gSave("Debts",     DEBT_HEADERS,  d),
+          gSave("Snapshots", SNAP_HEADERS,  s),
         ]);
         setSync("ok");
-      } catch { setSync("error"); }
-    }, 1200);
+      } catch(e) {
+        console.error(e);
+        setSync("error");
+      }
+    }, 1500);
   },[]);
 
   const updA = a => { setAssets(a);  persist(a, debts, snapshots); };
   const updD = d => { setDebts(d);   persist(assets, d, snapshots); };
 
-  // Snapshot
+  // ── Snapshot quotidien ────────────────────────────────────────────────────
   useEffect(()=>{
     if(!assets.length) return;
     const today = new Date().toISOString().split("T")[0];
@@ -239,13 +239,13 @@ function App() {
     });
   },[assets,debts]);
 
-  // Totals
-  const totalBrut      = assets.reduce((s,a)=>s+Number(a.value),0);
-  const totalDettes    = debts.reduce((s,d)=>s+Number(d.value),0);
-  const totalNet       = totalBrut-totalDettes;
-  const totalFin       = assets.filter(a=>ASSET_TYPES.find(t=>t.id===a.type)?.financial).reduce((s,a)=>s+Number(a.value),0);
-  const totalCost      = assets.reduce((s,a)=>s+Number(a.costBasis||a.value),0);
-  const totalPnL       = totalBrut-totalCost;
+  // ── Totaux ────────────────────────────────────────────────────────────────
+  const totalBrut   = assets.reduce((s,a)=>s+Number(a.value),0);
+  const totalDettes = debts.reduce((s,d)=>s+Number(d.value),0);
+  const totalNet    = totalBrut-totalDettes;
+  const totalFin    = assets.filter(a=>ASSET_TYPES.find(t=>t.id===a.type)?.financial).reduce((s,a)=>s+Number(a.value),0);
+  const totalCost   = assets.reduce((s,a)=>s+Number(a.costBasis||a.value),0);
+  const totalPnL    = totalBrut-totalCost;
 
   const groupData = ASSET_TYPES.reduce((acc,t)=>{
     const sum=assets.filter(a=>a.type===t.id).reduce((s,a)=>s+Number(a.value),0);
@@ -256,7 +256,7 @@ function App() {
   const hAssets = highlight==="financier" ? assets.filter(a=>ASSET_TYPES.find(t=>t.id===a.type)?.financial) : assets;
   const hGroup  = highlight==="financier" ? groupData.filter(g=>g.financial) : groupData;
 
-  // Asset form
+  // ── Formulaire actif ──────────────────────────────────────────────────────
   const openAddA  = ()=>{ setAForm({name:"",type:"pea",value:"",costBasis:"",notes:""}); setEditAId(null); setShowAF(true); };
   const openEditA = a=>{ setAForm({name:a.name,type:a.type,value:a.value,costBasis:a.costBasis||"",notes:a.notes||""}); setEditAId(a.id); setShowAF(true); };
   const submitA   = ()=>{
@@ -267,7 +267,7 @@ function App() {
     setShowAF(false);
   };
 
-  // Debt form
+  // ── Formulaire dette ──────────────────────────────────────────────────────
   const openAddD  = ()=>{ setDForm({name:"",type:"credit_immo",value:"",notes:""}); setEditDId(null); setShowDF(true); };
   const openEditD = d=>{ setDForm({name:d.name,type:d.type,value:d.value,notes:d.notes||""}); setEditDId(d.id); setShowDF(true); };
   const submitD   = ()=>{
@@ -278,27 +278,30 @@ function App() {
     setShowDF(false);
   };
 
-  // AI
+  // ── IA ────────────────────────────────────────────────────────────────────
   const sendAI = useCallback(async()=>{
     if(!aiInput.trim()||aiLoading) return;
     const msg=aiInput.trim(); setAiInput("");
     const msgs=[...aiMsgs,{role:"user",content:msg}]; setAiMsgs(msgs); setAiLoading(true);
-    const ctx=`Tu es un conseiller patrimoine expert. Données utilisateur :
-ACTIFS: ${JSON.stringify(assets.map(a=>({nom:a.name,type:a.type,valeur:a.value,pr:a.costBasis})))}
-PASSIF: ${JSON.stringify(debts.map(d=>({nom:d.name,valeur:d.value})))}
-Brut:${fmt(totalBrut)} Net:${fmt(totalNet)} Financier:${fmt(totalFin)} PnL:${fmt(totalPnL)}
-Réponds en français, concis et actionnable.`;
+    const ctx=`Tu es un conseiller patrimoine expert et bienveillant.
+ACTIFS: ${JSON.stringify(assets.map(a=>({nom:a.name,type:a.type,valeur:a.value,pr:a.costBasis,notes:a.notes})))}
+PASSIF: ${JSON.stringify(debts.map(d=>({nom:d.name,type:d.type,valeur:d.value,notes:d.notes})))}
+Brut: ${fmt(totalBrut)} | Net: ${fmt(totalNet)} | Financier: ${fmt(totalFin)} | P&L: ${fmt(totalPnL)}
+Réponds en français, de manière précise et actionnable.`;
     try {
       const res=await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,system:ctx,messages:msgs})});
       const data=await res.json();
       setAiMsgs([...msgs,{role:"assistant",content:data.content?.find(b=>b.type==="text")?.text||"Erreur."}]);
-    } catch { setAiMsgs([...msgs,{role:"assistant",content:"Erreur de connexion."}]); }
+    } catch {
+      setAiMsgs([...msgs,{role:"assistant",content:"Erreur de connexion."}]);
+    }
     setAiLoading(false);
   },[aiInput,aiLoading,aiMsgs,assets,debts,totalBrut,totalNet,totalFin,totalPnL]);
 
   const sparkBrut = snapshots.slice(-30).map(s=>Number(s.brut));
   const sparkNet  = snapshots.slice(-30).map(s=>Number(s.net));
 
+  // ── Render ────────────────────────────────────────────────────────────────
   return (
     <div style={{background:C.bg,minHeight:"100vh",color:C.text,paddingBottom:80}}>
 
@@ -317,18 +320,16 @@ Réponds en français, concis et actionnable.`;
 
         {/* ── DASHBOARD ── */}
         {view==="dashboard" && <>
-          {/* KPIs */}
           <div style={{display:"flex",gap:12,marginBottom:20,flexWrap:"wrap"}}>
-            <KpiCard label="Patrimoine brut"      sublabel="Somme de tous les actifs"        value={fmt(totalBrut)} color={C.accent}                     delta={totalPnL}  sparkValues={sparkBrut} active={highlight==="brut"}      onClick={()=>setHighlight(h=>h==="brut"?"null":"brut")} />
-            <KpiCard label="Patrimoine net"       sublabel={`Brut − ${fmt(totalDettes)} dettes`} value={fmt(totalNet)}  color={totalNet>=0?C.green:C.red} sparkValues={sparkNet}  active={highlight==="net"}       onClick={()=>setHighlight(h=>h==="net"?null:"net")} />
-            <KpiCard label="Patrimoine financier" sublabel="PEA · CTO · Livrets · Crypto"    value={fmt(totalFin)}  color={C.blue}                                               active={highlight==="financier"} onClick={()=>setHighlight(h=>h==="financier"?null:"financier")} />
+            <KpiCard label="Patrimoine brut"      sublabel="Somme de tous les actifs"       value={fmt(totalBrut)} color={C.accent}                    delta={totalPnL}  sparkValues={sparkBrut} active={highlight==="brut"}      onClick={()=>setHighlight(h=>h==="brut"?null:"brut")} />
+            <KpiCard label="Patrimoine net"       sublabel={`Brut − ${fmt(totalDettes)} dettes`} value={fmt(totalNet)} color={totalNet>=0?C.green:C.red} sparkValues={sparkNet} active={highlight==="net"}  onClick={()=>setHighlight(h=>h==="net"?null:"net")} />
+            <KpiCard label="Patrimoine financier" sublabel="PEA · CTO · Livrets · Crypto"   value={fmt(totalFin)}  color={C.blue}                                              active={highlight==="financier"} onClick={()=>setHighlight(h=>h==="financier"?null:"financier")} />
           </div>
 
           {highlight&&<div style={{fontSize:12,color:C.muted,marginBottom:14,textAlign:"center"}}>
             {highlight==="financier"?"📊 Filtré actifs financiers":highlight==="net"?"🔍 Net = actifs − passif":"🔍 Brut = tous les actifs"} · Cliquer à nouveau pour tout afficher
           </div>}
 
-          {/* Donut + synthèse */}
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:16,marginBottom:16}}>
             <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:20}}>
               <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:C.muted,marginBottom:12}}>Répartition</div>
@@ -356,11 +357,11 @@ Réponds en français, concis et actionnable.`;
             <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:20}}>
               <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:C.muted,marginBottom:12}}>Synthèse</div>
               {[
-                {label:"Actifs bruts",          value:totalBrut,           color:C.accent},
-                {label:"Dont financier",         value:totalFin,            color:C.blue,   indent:true},
-                {label:"Dont réel (immo/SCPI)",  value:totalBrut-totalFin,  color:C.orange, indent:true},
-                {label:"Passif (dettes)",        value:-totalDettes,        color:C.red},
-                {label:"Patrimoine NET",         value:totalNet,            color:totalNet>=0?C.green:C.red, bold:true},
+                {label:"Actifs bruts",          value:totalBrut,          color:C.accent},
+                {label:"Dont financier",         value:totalFin,           color:C.blue,   indent:true},
+                {label:"Dont réel (immo/SCPI)",  value:totalBrut-totalFin, color:C.orange, indent:true},
+                {label:"Passif (dettes)",        value:-totalDettes,       color:C.red},
+                {label:"Patrimoine NET",         value:totalNet,           color:totalNet>=0?C.green:C.red, bold:true},
               ].map(row=>(
                 <div key={row.label} style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10,paddingLeft:row.indent?14:0}}>
                   <div style={{fontSize:row.bold?14:13,fontWeight:row.bold?700:400,color:row.bold?C.text:C.muted}}>
@@ -369,15 +370,14 @@ Réponds en français, concis et actionnable.`;
                   <div style={{fontSize:row.bold?15:13,fontWeight:700,color:row.color}}>{fmt(row.value)}</div>
                 </div>
               ))}
-              {!debts.length&&<div style={{textAlign:"center",marginTop:8}}><button onClick={()=>setView("assets")} style={{...ghostBtnStyle,padding:"6px 12px",fontSize:12}}>+ Ajouter des dettes</button></div>}
+              {!debts.length&&<div style={{textAlign:"center",marginTop:8}}><button onClick={()=>setView("assets")} style={{...gB,padding:"6px 12px",fontSize:12}}>+ Ajouter des dettes</button></div>}
             </div>
           </div>
 
-          {/* Top actifs */}
           <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:20}}>
             <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:C.muted,marginBottom:12}}>Top actifs{highlight==="financier"?" (financiers)":""}</div>
             {!assets.length ? (
-              <div style={{textAlign:"center",padding:"30px 0"}}><button style={addBtnStyle} onClick={()=>setView("assets")}>Commencer</button></div>
+              <div style={{textAlign:"center",padding:"30px 0"}}><button style={aB} onClick={()=>setView("assets")}>Commencer</button></div>
             ) : (
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(190px,1fr))",gap:10}}>
                 {hAssets.sort((a,b)=>Number(b.value)-Number(a.value)).slice(0,6).map(a=>{
@@ -398,7 +398,6 @@ Réponds en français, concis et actionnable.`;
             )}
           </div>
 
-          {/* Histogramme */}
           {snapshots.length>1&&(
             <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:20,marginTop:16}}>
               <div style={{fontSize:11,fontWeight:700,textTransform:"uppercase",letterSpacing:1,color:C.muted,marginBottom:12}}>Évolution 30 jours</div>
@@ -423,7 +422,7 @@ Réponds en français, concis et actionnable.`;
         {view==="assets" && <>
           <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
             <div style={{fontSize:18,fontWeight:700}}>Actifs <span style={{fontSize:14,color:C.muted,fontWeight:400}}>{fmt(totalBrut)}</span></div>
-            <button style={addBtnStyle} onClick={openAddA}>+ Actif</button>
+            <button style={aB} onClick={openAddA}>+ Actif</button>
           </div>
 
           {["financial","real"].map(group=>{
@@ -448,7 +447,7 @@ Réponds en français, concis et actionnable.`;
                       const pnl=Number(a.value)-Number(a.costBasis||a.value);
                       const pp=a.costBasis?((pnl/Number(a.costBasis))*100).toFixed(1):"0.0";
                       return (
-                        <div key={a.id} style={rowStyle}>
+                        <div key={a.id} style={rS}>
                           <div style={{flex:1}}>
                             <div style={{fontWeight:600,fontSize:14}}>{a.name}</div>
                             {a.notes&&<div style={{fontSize:12,color:C.muted}}>{a.notes}</div>}
@@ -457,8 +456,8 @@ Réponds en français, concis et actionnable.`;
                             <div style={{fontWeight:700,fontSize:15}}>{fmt(a.value)}</div>
                             {a.costBasis&&Number(a.costBasis)!==Number(a.value)&&<div style={{fontSize:11,color:pnl>=0?C.green:C.red}}>{pnl>=0?"+":""}{fmt(pnl)} ({pnl>=0?"+":""}{pp}%)</div>}
                           </div>
-                          <button onClick={()=>openEditA(a)} style={{...ghostBtnStyle,padding:"5px 9px",fontSize:12}}>✏️</button>
-                          <button onClick={()=>updA(assets.filter(x=>x.id!==a.id))} style={{...ghostBtnStyle,padding:"5px 9px",fontSize:12,color:C.red}}>🗑️</button>
+                          <button onClick={()=>openEditA(a)} style={{...gB,padding:"5px 9px",fontSize:12}}>✏️</button>
+                          <button onClick={()=>updA(assets.filter(x=>x.id!==a.id))} style={{...gB,padding:"5px 9px",fontSize:12,color:C.red}}>🗑️</button>
                         </div>
                       );
                     })}
@@ -471,27 +470,27 @@ Réponds en français, concis et actionnable.`;
           {!assets.length&&<div style={{textAlign:"center",padding:"40px 0",color:C.muted}}>
             <div style={{fontSize:40,marginBottom:12}}>💼</div>
             <div style={{marginBottom:16}}>Aucun actif — commencez par votre PEA ou un livret</div>
-            <button style={addBtnStyle} onClick={openAddA}>+ Ajouter un actif</button>
+            <button style={aB} onClick={openAddA}>+ Ajouter un actif</button>
           </div>}
 
           {/* Passif */}
           <div style={{borderTop:`1px solid ${C.border}`,marginTop:8,paddingTop:24}}>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
               <div style={{fontSize:18,fontWeight:700}}>Passif <span style={{fontSize:14,color:C.red,fontWeight:400}}>−{fmt(totalDettes)}</span></div>
-              <button style={{...addBtnStyle,background:C.red+"22",color:C.red}} onClick={openAddD}>+ Dette</button>
+              <button style={{...aB,background:C.red+"22",color:C.red}} onClick={openAddD}>+ Dette</button>
             </div>
             {debts.map(d=>{
               const dt=debtTypeOf(d.type);
               return (
-                <div key={d.id} style={rowStyle}>
+                <div key={d.id} style={rS}>
                   <span style={{fontSize:18}}>{dt.icon}</span>
                   <div style={{flex:1}}>
                     <div style={{fontWeight:600,fontSize:14}}>{d.name}</div>
                     {d.notes&&<div style={{fontSize:12,color:C.muted}}>{d.notes}</div>}
                   </div>
                   <div style={{fontWeight:700,fontSize:15,color:C.red}}>−{fmt(d.value)}</div>
-                  <button onClick={()=>openEditD(d)} style={{...ghostBtnStyle,padding:"5px 9px",fontSize:12}}>✏️</button>
-                  <button onClick={()=>updD(debts.filter(x=>x.id!==d.id))} style={{...ghostBtnStyle,padding:"5px 9px",fontSize:12,color:C.red}}>🗑️</button>
+                  <button onClick={()=>openEditD(d)} style={{...gB,padding:"5px 9px",fontSize:12}}>✏️</button>
+                  <button onClick={()=>updD(debts.filter(x=>x.id!==d.id))} style={{...gB,padding:"5px 9px",fontSize:12,color:C.red}}>🗑️</button>
                 </div>
               );
             })}
@@ -516,20 +515,14 @@ Réponds en français, concis et actionnable.`;
                   <div style={{fontSize:13,color:C.muted,marginBottom:18}}>Posez n'importe quelle question sur votre patrimoine</div>
                   <div style={{display:"flex",flexWrap:"wrap",gap:8,justifyContent:"center"}}>
                     {["Analyse ma diversification","Mon taux d'endettement est-il sain ?","Optimise ma fiscalité","Financier vs immobilier ?"].map(q=>(
-                      <button key={q} onClick={()=>setAiInput(q)} style={{...ghostBtnStyle,borderRadius:20,padding:"7px 14px",fontSize:12}}>{q}</button>
+                      <button key={q} onClick={()=>setAiInput(q)} style={{...gB,borderRadius:20,padding:"7px 14px",fontSize:12}}>{q}</button>
                     ))}
                   </div>
                 </div>
               )}
               {aiMsgs.map((m,i)=>(
                 <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start"}}>
-                  <div style={{
-                    background:m.role==="user"?C.accent+"18":C.surface,
-                    border:`1px solid ${m.role==="user"?C.accent+"44":C.border}`,
-                    borderRadius:12,padding:"12px 16px",maxWidth:"85%",
-                    alignSelf:m.role==="user"?"flex-end":"flex-start",
-                    fontSize:14,lineHeight:1.6,whiteSpace:"pre-wrap",
-                  }}>{m.content}</div>
+                  <div style={{background:m.role==="user"?C.accent+"18":C.surface,border:`1px solid ${m.role==="user"?C.accent+"44":C.border}`,borderRadius:12,padding:"12px 16px",maxWidth:"85%",fontSize:14,lineHeight:1.6,whiteSpace:"pre-wrap"}}>{m.content}</div>
                 </div>
               ))}
               {aiLoading&&<div style={{display:"flex"}}><div style={{background:C.surface,border:`1px solid ${C.border}`,borderRadius:12,padding:"12px 16px"}}>
@@ -539,8 +532,8 @@ Réponds en français, concis et actionnable.`;
               </div></div>}
             </div>
             <div style={{display:"flex",gap:10}}>
-              <input style={{...inputStyle,flex:1}} placeholder="Posez votre question…" value={aiInput} onChange={e=>setAiInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendAI()}/>
-              <button onClick={sendAI} disabled={aiLoading||!aiInput.trim()} style={{...addBtnStyle,opacity:aiLoading||!aiInput.trim()?0.5:1}}>Envoyer</button>
+              <input style={{...iS,flex:1}} placeholder="Posez votre question…" value={aiInput} onChange={e=>setAiInput(e.target.value)} onKeyDown={e=>e.key==="Enter"&&sendAI()}/>
+              <button onClick={sendAI} disabled={aiLoading||!aiInput.trim()} style={{...aB,opacity:aiLoading||!aiInput.trim()?0.5:1}}>Envoyer</button>
             </div>
           </div>
         )}
@@ -551,16 +544,16 @@ Réponds en français, concis et actionnable.`;
         <div style={{position:"fixed",inset:0,background:"#00000099",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&setShowAF(false)}>
           <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:28,width:"100%",maxWidth:420}}>
             <div style={{fontSize:16,fontWeight:700,marginBottom:18}}>{editAId?"Modifier":"Ajouter"} un actif</div>
-            <div style={{marginBottom:12}}><label style={labelStyle}>Nom</label><input style={inputStyle} placeholder="PEA Boursorama, Appartement Valence…" value={aForm.name} onChange={e=>setAForm({...aForm,name:e.target.value})}/></div>
-            <div style={{marginBottom:12}}><label style={labelStyle}>Catégorie</label><select style={inputStyle} value={aForm.type} onChange={e=>setAForm({...aForm,type:e.target.value})}>{ASSET_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}</select></div>
+            <div style={{marginBottom:12}}><label style={lS}>Nom</label><input style={iS} placeholder="PEA Boursorama, Appartement Valence…" value={aForm.name} onChange={e=>setAForm({...aForm,name:e.target.value})}/></div>
+            <div style={{marginBottom:12}}><label style={lS}>Catégorie</label><select style={iS} value={aForm.type} onChange={e=>setAForm({...aForm,type:e.target.value})}>{ASSET_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}</select></div>
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:12}}>
-              <div><label style={labelStyle}>Valeur actuelle (€)</label><input style={inputStyle} type="number" placeholder="0" value={aForm.value} onChange={e=>setAForm({...aForm,value:e.target.value})}/></div>
-              <div><label style={labelStyle}>Prix de revient (€)</label><input style={inputStyle} type="number" placeholder="optionnel" value={aForm.costBasis} onChange={e=>setAForm({...aForm,costBasis:e.target.value})}/></div>
+              <div><label style={lS}>Valeur actuelle (€)</label><input style={iS} type="number" placeholder="0" value={aForm.value} onChange={e=>setAForm({...aForm,value:e.target.value})}/></div>
+              <div><label style={lS}>Prix de revient (€)</label><input style={iS} type="number" placeholder="optionnel" value={aForm.costBasis} onChange={e=>setAForm({...aForm,costBasis:e.target.value})}/></div>
             </div>
-            <div style={{marginBottom:18}}><label style={labelStyle}>Notes</label><input style={inputStyle} placeholder="ISIN, adresse…" value={aForm.notes} onChange={e=>setAForm({...aForm,notes:e.target.value})}/></div>
+            <div style={{marginBottom:18}}><label style={lS}>Notes</label><input style={iS} placeholder="ISIN, adresse…" value={aForm.notes} onChange={e=>setAForm({...aForm,notes:e.target.value})}/></div>
             <div style={{display:"flex",gap:10}}>
-              <button onClick={()=>setShowAF(false)} style={{flex:1,...ghostBtnStyle}}>Annuler</button>
-              <button onClick={submitA} style={{flex:2,...addBtnStyle}}>{editAId?"Enregistrer":"Ajouter"}</button>
+              <button onClick={()=>setShowAF(false)} style={{flex:1,...gB}}>Annuler</button>
+              <button onClick={submitA} style={{flex:2,...aB}}>{editAId?"Enregistrer":"Ajouter"}</button>
             </div>
           </div>
         </div>
@@ -571,13 +564,13 @@ Réponds en français, concis et actionnable.`;
         <div style={{position:"fixed",inset:0,background:"#00000099",zIndex:100,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&setShowDF(false)}>
           <div style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:16,padding:28,width:"100%",maxWidth:420}}>
             <div style={{fontSize:16,fontWeight:700,marginBottom:18}}>{editDId?"Modifier":"Ajouter"} une dette</div>
-            <div style={{marginBottom:12}}><label style={labelStyle}>Nom</label><input style={inputStyle} placeholder="Crédit CIC, LOA voiture…" value={dForm.name} onChange={e=>setDForm({...dForm,name:e.target.value})}/></div>
-            <div style={{marginBottom:12}}><label style={labelStyle}>Type</label><select style={inputStyle} value={dForm.type} onChange={e=>setDForm({...dForm,type:e.target.value})}>{DEBT_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}</select></div>
-            <div style={{marginBottom:12}}><label style={labelStyle}>Capital restant dû (€)</label><input style={inputStyle} type="number" placeholder="0" value={dForm.value} onChange={e=>setDForm({...dForm,value:e.target.value})}/></div>
-            <div style={{marginBottom:18}}><label style={labelStyle}>Notes</label><input style={inputStyle} placeholder="Taux, durée restante…" value={dForm.notes} onChange={e=>setDForm({...dForm,notes:e.target.value})}/></div>
+            <div style={{marginBottom:12}}><label style={lS}>Nom</label><input style={iS} placeholder="Crédit CIC, LOA voiture…" value={dForm.name} onChange={e=>setDForm({...dForm,name:e.target.value})}/></div>
+            <div style={{marginBottom:12}}><label style={lS}>Type</label><select style={iS} value={dForm.type} onChange={e=>setDForm({...dForm,type:e.target.value})}>{DEBT_TYPES.map(t=><option key={t.id} value={t.id}>{t.icon} {t.label}</option>)}</select></div>
+            <div style={{marginBottom:12}}><label style={lS}>Capital restant dû (€)</label><input style={iS} type="number" placeholder="0" value={dForm.value} onChange={e=>setDForm({...dForm,value:e.target.value})}/></div>
+            <div style={{marginBottom:18}}><label style={lS}>Notes</label><input style={iS} placeholder="Taux, durée restante…" value={dForm.notes} onChange={e=>setDForm({...dForm,notes:e.target.value})}/></div>
             <div style={{display:"flex",gap:10}}>
-              <button onClick={()=>setShowDF(false)} style={{flex:1,...ghostBtnStyle}}>Annuler</button>
-              <button onClick={submitD} style={{flex:2,...addBtnStyle,background:C.red+"22",color:C.red}}>{editDId?"Enregistrer":"Ajouter"}</button>
+              <button onClick={()=>setShowDF(false)} style={{flex:1,...gB}}>Annuler</button>
+              <button onClick={submitD} style={{flex:2,...aB,background:C.red+"22",color:C.red}}>{editDId?"Enregistrer":"Ajouter"}</button>
             </div>
           </div>
         </div>
